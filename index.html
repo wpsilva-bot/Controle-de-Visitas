@@ -237,6 +237,10 @@ header{padding-top:calc(20px + env(safe-area-inset-top))}
 .addpg{position:relative;font-size:13px;padding:9px 12px}
 .addpg input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .docgrid{display:grid;gap:10px}
+.cpfmsg{font-size:12.5px;font-weight:700;margin-top:5px;min-height:16px}
+.cpfmsg.ok{color:#047857}.cpfmsg.bad{color:var(--red)}
+input.bad{border-color:var(--red)!important;background:#fef2f2!important}
+input.ok{border-color:#10b981!important}
 .transcript{display:none;background:#f8f9ff;border:1px solid #e0e7ff;border-radius:14px;padding:12px 14px;margin-bottom:12px;font-size:14.5px;line-height:1.45;color:var(--ink2)}
 .transcript.on{display:block}
 .transcript .lbl{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--pri);margin-bottom:4px}
@@ -366,7 +370,7 @@ header{padding-top:calc(20px + env(safe-area-inset-top))}
         <div><label for="f_doc_tipo">Documento</label>
           <select id="f_doc_tipo"><option>RG</option><option>CNH</option><option>CPF</option><option>Passaporte</option><option>Crachá</option><option>Outro</option></select></div>
         <div><label for="f_doc_num">Número do documento</label><input id="f_doc_num"></div>
-        <div><label for="f_cpf">CPF</label><input id="f_cpf" inputmode="numeric"></div>
+        <div><label for="f_cpf">CPF</label><input id="f_cpf" inputmode="numeric" maxlength="14" placeholder="000.000.000-00"><div class="cpfmsg" id="cpfMsg"></div></div>
         <div><label for="f_tel">Telefone</label><input id="f_tel" inputmode="tel"></div>
         <div class="sec">Visita</div>
         <div><label for="f_empresa">Empresa / origem</label><input id="f_empresa"></div>
@@ -727,6 +731,31 @@ function parseLocal(t) {
   return o;
 }
 
+function cpfValido(v) {
+  const d = digits(v);
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false;
+  for (let t = 9; t < 11; t++) {
+    let soma = 0;
+    for (let i = 0; i < t; i++) soma += +d[i] * (t + 1 - i);
+    if (((soma * 10) % 11) % 10 !== +d[t]) return false;
+  }
+  return true;
+}
+function checaCPF(final) {
+  const el = $("#f_cpf"), msg = $("#cpfMsg"), d = digits(el.value);
+  el.classList.remove("ok", "bad"); msg.className = "cpfmsg"; msg.textContent = "";
+  if (!d) return true;
+  if (d.length < 11) { if (final) { el.classList.add("bad"); msg.classList.add("bad"); msg.textContent = "CPF incompleto"; return false; } return true; }
+  if (cpfValido(d)) { el.classList.add("ok"); msg.classList.add("ok"); msg.textContent = "✓ CPF válido"; return true; }
+  el.classList.add("bad"); msg.classList.add("bad"); msg.textContent = "✗ CPF inválido, confira os números"; return false;
+}
+$("#f_cpf").addEventListener("input", e => {
+  let d = digits(e.target.value).slice(0, 11);
+  e.target.value = d.replace(/^(\d{3})(\d)/, "$1.$2").replace(/^(\d{3})\.(\d{3})(\d)/, "$1.$2.$3").replace(/\.(\d{3})(\d{1,2})$/, ".$1-$2");
+  checaCPF(false);
+});
+$("#f_cpf").addEventListener("blur", () => checaCPF(true));
+
 function fillForm(o) {
   const map = { nome:"#f_nome", doc_num:"#f_doc_num", cpf:"#f_cpf", telefone:"#f_tel", empresa:"#f_empresa", visitado:"#f_visitado", motivo:"#f_motivo", obs:"#f_obs" };
   let n = 0;
@@ -737,6 +766,7 @@ function fillForm(o) {
   }
   if (["RG","CNH","CPF","Passaporte","Crachá","Outro"].includes(o.doc_tipo)) $("#f_doc_tipo").value = o.doc_tipo;
   for (const k of ["entrada","saida"]) if (o[k] && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(o[k])) { $("#f_" + k).value = o[k].slice(0,16); n++; }
+  checaCPF(true);
   return n;
 }
 
@@ -746,6 +776,7 @@ function resetForm() {
   renderThumbs();
   $("#f_entrada").value = toLocalInput(Date.now());
   $("#formTitle").textContent = "Nova visita"; $("#btnSave").textContent = "Registrar entrada"; $("#btnCancelEdit").style.display = "none";
+  checaCPF(false);
 }
 $("#btnCancelEdit").onclick = resetForm;
 resetForm();
@@ -759,6 +790,7 @@ $("#form").addEventListener("submit", async e => {
     entrada: fromLocalInput($("#f_entrada").value) || Date.now(), saida: fromLocalInput($("#f_saida").value)
   };
   if (!r.nome || !r.visitado) { toast("Informe o nome e quem será visitado."); return; }
+  if (!checaCPF(true)) { toast("O CPF informado não é válido. Corrija ou deixe em branco."); $("#f_cpf").focus(); return; }
   const old = editingId ? visitas.find(x => x.id === editingId) : null;
   r.temFoto = fotosChanged ? fotos.length > 0 : !!(old && old.temFoto);
   r.nFotos = fotosChanged ? fotos.length : (old ? (old.nFotos ?? (old.temFoto ? 1 : 0)) : 0);
