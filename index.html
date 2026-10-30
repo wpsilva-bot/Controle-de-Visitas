@@ -28,7 +28,7 @@ window.APP_CONFIG = {
   // Nome exibido no topo do app
   nomeEscritorio: "Portaria",
   // Modelos de IA (o primeiro que responder é usado)
-  modelos: ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+  modelos: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash"]
 };
 
 </script>
@@ -452,6 +452,7 @@ async function gemini(prompt, imageB64) {
       return JSON.parse(txt);
     } catch (e) { last = e; console.warn("IA", m, e); }
   }
+  window.__iaErro = String((last && (last.message || last.code)) || last || "").slice(0, 160);
   throw last;
 }
 
@@ -573,17 +574,23 @@ function listen(mode) {
   if (!SR) { toast("Seu navegador não tem reconhecimento de voz. Use o Google Chrome."); return; }
   if (rec) { rec.stop(); return; }
   recMode = mode; finalTxt = "";
-  rec = new SR(); rec.lang = "pt-BR"; rec.interimResults = true; rec.continuous = mode === "form"; rec.maxAlternatives = 1;
+  rec = new SR(); rec.lang = "pt-BR"; rec.interimResults = true; rec.continuous = mode === "form" && !/Android/i.test(navigator.userAgent); rec.maxAlternatives = 1;
   rec.onstart = () => {
     micUI(true);
     if (mode === "form") { $("#transcript").classList.add("on"); $("#trFinal").textContent = ""; $("#trInterim").textContent = ""; }
   };
   rec.onresult = ev => {
-    let interim = "";
-    for (let i = ev.resultIndex; i < ev.results.length; i++) {
-      const t = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) finalTxt += (finalTxt ? " " : "") + t.trim(); else interim += t;
+    // monta o texto a partir de TODOS os resultados (corrige repetição no Android)
+    const finals = []; let interim = "";
+    for (let i = 0; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript.trim();
+      if (!ev.results[i].isFinal) { interim += " " + t; continue; }
+      const prev = finals[finals.length - 1];
+      if (prev && norm(t).startsWith(norm(prev))) finals[finals.length - 1] = t; // Android repete a frase acumulada
+      else if (!prev || !norm(prev).endsWith(norm(t))) finals.push(t);
     }
+    finalTxt = finals.join(" ").replace(/\s+/g, " ").trim();
+    interim = interim.trim();
     if (mode === "form") { $("#trFinal").textContent = finalTxt; $("#trInterim").textContent = interim; }
     else { $("#q").value = (finalTxt + " " + interim).trim().replace(/[.?!]$/, ""); renderBusca(); }
   };
@@ -615,7 +622,12 @@ Números ditados por extenso devem virar dígitos. Responda SOMENTE com JSON com
     const n = fillForm(out || {});
     if (n) { toast(`${n} campo(s) preenchido(s). Confira e salve.`); $("#transcript").classList.remove("on"); $("#form").scrollIntoView({ behavior:"smooth", block:"start" }); }
     else toast("Não entendi os dados. Toque no microfone e tente de novo.");
-  } catch (e) { toast("A IA não respondeu. Verifique a configuração do Firebase AI Logic.", 4500); }
+  } catch (e) {
+    const n = fillForm(parseLocal(txt));
+    toast((n ? `IA indisponível. Preenchi ${n} campo(s) do jeito simples, confira.` : "IA indisponível. Preencha manualmente.") + (window.__iaErro ? ` [${window.__iaErro.slice(0,90)}]` : ""), 7000);
+    console.warn("Erro IA:", window.__iaErro);
+    $("#transcript").classList.remove("on");
+  }
   finally { $("#btnMic").disabled = false; micUI(false); }
 }
 
@@ -642,6 +654,20 @@ Se a imagem não for um documento, devolva todas as chaves vazias.`, b64);
   } catch { $("#previewMsg").textContent = "Não foi possível ler agora. Preencha manualmente."; }
 });
 $("#btnRemovePhoto").onclick = () => { photoData = null; photoChanged = true; $("#preview").classList.remove("on"); };
+
+function parseLocal(t) {
+  const o = {}; let x = " " + t.replace(/\s+/g, " ").replace(/\b(Dra?|Sra?|Prof|Profa)\./gi, "$1") + " ";
+  const cpf = x.match(/(\d[\d.\- ]{9,16}\d)/g)?.map(digits).find(d => d.length === 11);
+  if (cpf) { o.cpf = cpf; }
+  const tel = x.match(/(?:telefone|celular|fone|whats\w*)\D{0,6}([\d ()\-]{8,18}\d)/i); if (tel) o.telefone = tel[1].trim();
+  const emp = x.match(/\b(?:da empresa|empresa|da firma|representante d[aeo]|d[ao] (?=[A-ZÁÉÍÓÚ]))\s+([^,.;]+?)(?=,|\.|;| veio| vem| para| quer| falar| visitar| telefone| cpf|$)/i); if (emp) o.empresa = emp[1].trim();
+  const vis = x.match(/\b(?:falar com|visitar|ver|reuni[aã]o com|procurando|com o|com a)\s+([^,.;]+?)(?=,|\.|;| sobre| para| telefone| cpf| da empresa|$)/i); if (vis) o.visitado = vis[1].trim().replace(/^(o|a)\s+/i, "");
+  const mot = x.match(/\b(?:sobre|motivo|assunto|para tratar de|para)\s+([^,.;]+)/i); if (mot && !/^(falar|visitar|ver)\b/i.test(mot[1])) o.motivo = mot[1].trim().replace(/^(o|a|os|as)\s+/i, "");
+  const nome = t.split(/,|\b(?:cpf|rg|cnh|da empresa|empresa|veio|vem|quer|para|telefone|celular)\b/i)[0].replace(/^(o|a|visitante|nome|senhor|senhora|sr\.?|sra\.?)\s+/i, "").trim();
+  if (nome && nome.split(" ").length <= 6) o.nome = nome.replace(/\b\w/g, c => c.toUpperCase());
+  o.obs = t;
+  return o;
+}
 
 function fillForm(o) {
   const map = { nome:"#f_nome", doc_num:"#f_doc_num", cpf:"#f_cpf", telefone:"#f_tel", empresa:"#f_empresa", visitado:"#f_visitado", motivo:"#f_motivo", obs:"#f_obs" };
