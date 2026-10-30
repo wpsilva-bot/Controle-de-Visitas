@@ -225,6 +225,18 @@ header{padding-top:calc(20px + env(safe-area-inset-top))}
 .wave i{width:4px;border-radius:3px;background:var(--red);animation:wv 1s ease-in-out infinite}
 .wave i:nth-child(2){animation-delay:.1s}.wave i:nth-child(3){animation-delay:.2s}.wave i:nth-child(4){animation-delay:.3s}.wave i:nth-child(5){animation-delay:.4s}.wave i:nth-child(6){animation-delay:.5s}.wave i:nth-child(7){animation-delay:.6s}
 @keyframes wv{0%,100%{height:5px}50%{height:22px}}
+.docs{display:none;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px;box-shadow:var(--sh)}
+.docs.on{display:block}
+.docs-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}
+.docs-top b{font-size:14px}
+.thumbs{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px}
+.th{position:relative;flex:none;width:96px;height:72px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.th img{width:100%;height:100%;object-fit:cover}
+.th span{position:absolute;left:5px;bottom:4px;font-size:10.5px;font-weight:800;color:#fff;background:rgba(15,23,42,.7);padding:1px 6px;border-radius:5px}
+.th button{position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:50%;border:0;background:rgba(15,23,42,.75);color:#fff;font-size:15px;line-height:1;cursor:pointer}
+.addpg{position:relative;font-size:13px;padding:9px 12px}
+.addpg input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.docgrid{display:grid;gap:10px}
 .transcript{display:none;background:#f8f9ff;border:1px solid #e0e7ff;border-radius:14px;padding:12px 14px;margin-bottom:12px;font-size:14.5px;line-height:1.45;color:var(--ink2)}
 .transcript.on{display:block}
 .transcript .lbl{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--pri);margin-bottom:4px}
@@ -338,10 +350,13 @@ header{padding-top:calc(20px + env(safe-area-inset-top))}
 
     <div class="transcript" id="transcript"><div class="lbl">Você disse</div><span id="trFinal"></span> <span class="interim" id="trInterim"></span></div>
 
-    <div class="preview" id="preview">
-      <img id="previewImg" alt="">
-      <div><b style="font-size:14px">Documento anexado</b><div class="hint" id="previewMsg" style="margin:2px 0 0">Lendo dados…</div></div>
-      <button class="btn ghost x" id="btnRemovePhoto" type="button">Remover</button>
+    <div class="docs" id="preview">
+      <div class="docs-top"><b id="docsTitle">Documento</b><span class="hint" id="previewMsg" style="margin:0"></span></div>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="row">
+        <label class="btn ghost addpg"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 8a2 2 0 0 1 2-2h2l2-2h6l2 2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="4"/></svg>Fotografar mais uma página<input type="file" accept="image/*" capture="environment" class="fileAdd"></label>
+        <label class="btn ghost addpg">Da galeria<input type="file" accept="image/*" multiple class="fileAdd"></label>
+      </div>
     </div>
 
     <form class="card" id="form" autocomplete="off">
@@ -440,19 +455,25 @@ catch { fs = F.getFirestore(app); }
 const ai = AI.getAI(app, { backend: new AI.GoogleAIBackend() });
 const ADMIN = String(CFG.adminEmail || "").toLowerCase();
 
+let iaOff = false, iaModelo = null;
+const comTempo = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error("tempo esgotado")), ms))]);
 async function gemini(prompt, imageB64) {
+  if (iaOff) throw new Error(window.__iaErro || "IA desativada nesta sessão");
   let last;
-  for (const m of (CFG.modelos || ["gemini-2.5-flash"])) {
+  const lista = iaModelo ? [iaModelo] : (CFG.modelos || ["gemini-2.5-flash"]);
+  for (const m of lista) {
     try {
       const model = AI.getGenerativeModel(ai, { model: m, generationConfig: { responseMimeType: "application/json", temperature: 0 } });
       const parts = [prompt];
       if (imageB64) parts.push({ inlineData: { data: imageB64, mimeType: "image/jpeg" } });
-      const r = await model.generateContent(parts);
+      const r = await comTempo(model.generateContent(parts), 12000);
       const txt = r.response.text().replace(/^```(json)?|```$/g, "").trim();
+      iaModelo = m;
       return JSON.parse(txt);
     } catch (e) { last = e; console.warn("IA", m, e); }
   }
   window.__iaErro = String((last && (last.message || last.code)) || last || "").slice(0, 160);
+  iaOff = true;
   throw last;
 }
 
@@ -517,7 +538,7 @@ function start(u) {
 }
 
 /* ---------------- DATA ---------------- */
-let visitas = [], editingId = null, photoData = null, photoChanged = false, periodo = "todos";
+let visitas = [], editingId = null, fotos = [], fotosChanged = false, periodo = "todos";
 const fotoCache = new Map();
 const pad = n => String(n).padStart(2,"0");
 const toLocalInput = ms => { if (!ms) return ""; const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -560,58 +581,76 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.da
 
 /* ---------------- VOZ ---------------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, recMode = null, finalTxt = "";
+let rec = null, recMode = null, finalTxt = "", accum = "", wantRec = false, recTimer = null, parsing = false;
 function micUI(on) {
   $("#btnMic").classList.toggle("rec", on && recMode === "form");
   $("#wave").classList.toggle("on", on && recMode === "form");
   $("#btnSMic").classList.toggle("rec", on && recMode === "busca");
-  if (recMode === "form") {
+  if (recMode === "form" || !on) {
     $("#micTitle").textContent = on ? "Ouvindo… toque para terminar" : "Toque e fale";
-    $("#micSub").textContent = on ? "Fale com calma. Pode pausar entre as informações." : "Diga nome, documento, empresa e quem vai visitar.";
+    $("#micSub").textContent = on ? "Fale tudo com calma, pode pausar. Quando acabar, toque no microfone." : "Diga nome, documento, empresa e quem vai visitar.";
   }
+}
+function sessionText(ev) {
+  const finals = []; let interim = "";
+  for (let i = 0; i < ev.results.length; i++) {
+    const t = ev.results[i][0].transcript.trim();
+    if (!ev.results[i].isFinal) { interim += " " + t; continue; }
+    const prev = finals[finals.length - 1];
+    if (prev && norm(t).startsWith(norm(prev))) finals[finals.length - 1] = t;
+    else if (!prev || !norm(prev).endsWith(norm(t))) finals.push(t);
+  }
+  return { fin: finals.join(" ").replace(/\s+/g, " ").trim(), interim: interim.trim() };
+}
+function startSession() {
+  const mode = recMode;
+  rec = new SR(); rec.lang = "pt-BR"; rec.interimResults = true; rec.continuous = true; rec.maxAlternatives = 1;
+  finalTxt = "";
+  rec.onresult = ev => {
+    const { fin, interim } = sessionText(ev); finalTxt = fin;
+    const all = (accum + " " + fin).trim();
+    if (mode === "form") { $("#trFinal").textContent = all; $("#trInterim").textContent = interim; }
+    else { $("#q").value = (all + " " + interim).trim().replace(/[.?!]$/, ""); renderBusca(); }
+  };
+  rec.onerror = ev => {
+    if (ev.error === "not-allowed" || ev.error === "service-not-allowed") { wantRec = false; toast("Permita o uso do microfone para este site nas configurações do navegador.", 4500); }
+    else if (ev.error === "network") { wantRec = false; toast("O reconhecimento de voz precisa de internet."); }
+  };
+  rec.onend = () => {
+    if (finalTxt) accum = (accum + " " + finalTxt).trim();
+    finalTxt = ""; rec = null;
+    if (wantRec && mode === "form") { setTimeout(() => { if (wantRec) { try { startSession(); } catch { finish(); } } }, 150); return; }
+    finish();
+  };
+  rec.start();
+}
+function finish() {
+  clearTimeout(recTimer);
+  const m = recMode, txt = accum.trim();
+  wantRec = false; rec = null; micUI(false); recMode = null; accum = "";
+  if (m === "form" && txt) parseVoz(txt);
+  else if (m === "form") { $("#transcript").classList.remove("on"); toast("Não ouvi nada. Toque no microfone e fale de novo."); }
 }
 function listen(mode) {
   if (!SR) { toast("Seu navegador não tem reconhecimento de voz. Use o Google Chrome."); return; }
-  if (rec) { rec.stop(); return; }
-  recMode = mode; finalTxt = "";
-  rec = new SR(); rec.lang = "pt-BR"; rec.interimResults = true; rec.continuous = mode === "form" && !/Android/i.test(navigator.userAgent); rec.maxAlternatives = 1;
-  rec.onstart = () => {
-    micUI(true);
-    if (mode === "form") { $("#transcript").classList.add("on"); $("#trFinal").textContent = ""; $("#trInterim").textContent = ""; }
-  };
-  rec.onresult = ev => {
-    // monta o texto a partir de TODOS os resultados (corrige repetição no Android)
-    const finals = []; let interim = "";
-    for (let i = 0; i < ev.results.length; i++) {
-      const t = ev.results[i][0].transcript.trim();
-      if (!ev.results[i].isFinal) { interim += " " + t; continue; }
-      const prev = finals[finals.length - 1];
-      if (prev && norm(t).startsWith(norm(prev))) finals[finals.length - 1] = t; // Android repete a frase acumulada
-      else if (!prev || !norm(prev).endsWith(norm(t))) finals.push(t);
-    }
-    finalTxt = finals.join(" ").replace(/\s+/g, " ").trim();
-    interim = interim.trim();
-    if (mode === "form") { $("#trFinal").textContent = finalTxt; $("#trInterim").textContent = interim; }
-    else { $("#q").value = (finalTxt + " " + interim).trim().replace(/[.?!]$/, ""); renderBusca(); }
-  };
-  rec.onerror = ev => {
-    if (ev.error === "not-allowed" || ev.error === "service-not-allowed") toast("Permita o uso do microfone para este site nas configurações do navegador.", 4500);
-    else if (ev.error === "no-speech") toast("Não ouvi nada. Toque no microfone e fale de novo.");
-    else if (ev.error === "network") toast("O reconhecimento de voz precisa de internet.");
-  };
-  rec.onend = () => {
-    const m = recMode; rec = null; micUI(false); recMode = null;
-    if (m === "form" && finalTxt.trim()) parseVoz(finalTxt.trim());
-    else if (m === "form") $("#transcript").classList.remove("on");
-  };
-  try { rec.start(); } catch { rec = null; toast("Não foi possível iniciar o microfone."); }
+  if (recMode) { // já está ouvindo: tocar de novo encerra
+    wantRec = false;
+    if (rec) { try { rec.stop(); } catch { finish(); } } else finish();
+    return;
+  }
+  if (parsing) return;
+  recMode = mode; accum = ""; wantRec = mode === "form";
+  micUI(true);
+  if (mode === "form") { $("#transcript").classList.add("on"); $("#trFinal").textContent = ""; $("#trInterim").textContent = ""; }
+  clearTimeout(recTimer); recTimer = setTimeout(() => { if (recMode) { wantRec = false; rec ? rec.stop() : finish(); } }, 90000);
+  try { startSession(); } catch { recMode = null; micUI(false); toast("Não foi possível iniciar o microfone."); }
 }
 $("#btnMic").onclick = () => listen("form");
 $("#btnSMic").onclick = () => listen("busca");
 
 async function parseVoz(txt) {
-  $("#micTitle").textContent = "Preenchendo os campos…"; $("#micSub").textContent = "A IA está organizando o que você disse.";
-  $("#btnMic").disabled = true;
+  $("#micTitle").textContent = "Preenchendo os campos…"; $("#micSub").textContent = "Organizando o que você disse.";
+  parsing = true;
   try {
     const out = await gemini(
 `Extraia dados de registro de visita de um escritório a partir deste texto ditado em português do Brasil.
@@ -628,32 +667,52 @@ Números ditados por extenso devem virar dígitos. Responda SOMENTE com JSON com
     console.warn("Erro IA:", window.__iaErro);
     $("#transcript").classList.remove("on");
   }
-  finally { $("#btnMic").disabled = false; micUI(false); }
+  finally { parsing = false; micUI(false); }
 }
 
 /* ---------------- FOTO ---------------- */
 function loadImage(file) { return new Promise((res, rej) => { const url = URL.createObjectURL(file); const img = new Image(); img.onload = () => { res(img); setTimeout(() => URL.revokeObjectURL(url), 1000); }; img.onerror = rej; img.src = url; }); }
 function drawScaled(img, max) { const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)); const c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); return c; }
 
-$("#fileDoc").addEventListener("change", async e => {
-  const file = e.target.files && e.target.files[0]; e.target.value = ""; if (!file) return;
-  let img; try { img = await loadImage(file); } catch { toast("Não consegui abrir a imagem."); return; }
+function renderThumbs() {
+  $("#preview").classList.toggle("on", fotos.length > 0);
+  $("#docsTitle").textContent = fotos.length === 1 ? "Documento (1 página)" : `Documento (${fotos.length} páginas)`;
+  $("#thumbs").innerHTML = fotos.map((f, i) => `<div class="th"><img alt="" src="${f}"><span>${i + 1}</span><button type="button" data-rmfoto="${i}" aria-label="Remover página">×</button></div>`).join("");
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-rmfoto]"); if (!b) return;
+  fotos.splice(+b.dataset.rmfoto, 1); fotosChanged = true; renderThumbs();
+});
+async function compactar(img) {
   let max = 1100, q = 0.62, data;
-  for (let i = 0; i < 5; i++) { data = drawScaled(img, max).toDataURL("image/jpeg", q); if (data.length < 300000) break; max = Math.round(max * 0.8); q = Math.max(0.4, q - 0.06); }
-  photoData = data; photoChanged = true;
-  $("#previewImg").src = data; $("#preview").classList.add("on"); $("#previewMsg").textContent = "Lendo os dados do documento…";
+  for (let i = 0; i < 6; i++) { data = drawScaled(img, max).toDataURL("image/jpeg", q); if (data.length < 280000) break; max = Math.round(max * 0.8); q = Math.max(0.4, q - 0.06); }
+  return data;
+}
+async function addFiles(files) {
+  if (!files.length) return;
+  if (fotos.length + files.length > 10) { toast("Máximo de 10 páginas por visita."); files = files.slice(0, 10 - fotos.length); }
+  const primeira = fotos.length === 0;
+  let firstImg = null;
+  for (const file of files) {
+    let img; try { img = await loadImage(file); } catch { toast("Não consegui abrir uma das imagens."); continue; }
+    fotos.push(await compactar(img)); fotosChanged = true; if (!firstImg) firstImg = img;
+  }
+  renderThumbs();
+  if (!primeira || !firstImg) { $("#previewMsg").textContent = "Página adicionada."; return; }
+  $("#previewMsg").textContent = "Lendo os dados…";
   try {
-    const b64 = drawScaled(img, 1600).toDataURL("image/jpeg", 0.85).split(",")[1];
+    const b64 = drawScaled(firstImg, 1600).toDataURL("image/jpeg", 0.85).split(",")[1];
     const out = await gemini(
 `Você extrai dados de documentos brasileiros de identificação (RG, CNH, CPF, passaporte, crachá funcional) a partir de uma foto.
 Responda SOMENTE com JSON com estas chaves (use "" quando não houver):
 {"nome":"nome completo","doc_tipo":"RG|CNH|CPF|Passaporte|Crachá|Outro","doc_num":"número do documento principal (registro da CNH, número do RG etc.)","cpf":"CPF só com dígitos","empresa":"órgão ou empresa se for crachá"}
 Se a imagem não for um documento, devolva todas as chaves vazias.`, b64);
     const n = fillForm(out || {});
-    $("#previewMsg").textContent = n ? `${n} campo(s) preenchido(s). Confira antes de salvar.` : "Não identifiquei dados legíveis. Preencha manualmente.";
-  } catch { $("#previewMsg").textContent = "Não foi possível ler agora. Preencha manualmente."; }
-});
-$("#btnRemovePhoto").onclick = () => { photoData = null; photoChanged = true; $("#preview").classList.remove("on"); };
+    $("#previewMsg").textContent = n ? `${n} campo(s) preenchido(s)` : "";
+  } catch { $("#previewMsg").textContent = ""; }
+}
+$("#fileDoc").addEventListener("change", e => { const f = [...(e.target.files || [])]; e.target.value = ""; addFiles(f); });
+document.addEventListener("change", e => { if (!e.target.classList.contains("fileAdd")) return; const f = [...(e.target.files || [])]; e.target.value = ""; addFiles(f); });
 
 function parseLocal(t) {
   const o = {}; let x = " " + t.replace(/\s+/g, " ").replace(/\b(Dra?|Sra?|Prof|Profa)\./gi, "$1") + " ";
@@ -665,7 +724,6 @@ function parseLocal(t) {
   const mot = x.match(/\b(?:sobre|motivo|assunto|para tratar de|para)\s+([^,.;]+)/i); if (mot && !/^(falar|visitar|ver)\b/i.test(mot[1])) o.motivo = mot[1].trim().replace(/^(o|a|os|as)\s+/i, "");
   const nome = t.split(/,|\b(?:cpf|rg|cnh|da empresa|empresa|veio|vem|quer|para|telefone|celular)\b/i)[0].replace(/^(o|a|visitante|nome|senhor|senhora|sr\.?|sra\.?)\s+/i, "").trim();
   if (nome && nome.split(" ").length <= 6) o.nome = nome.replace(/\b\w/g, c => c.toUpperCase());
-  o.obs = t;
   return o;
 }
 
@@ -684,8 +742,8 @@ function fillForm(o) {
 
 /* ---------------- FORM ---------------- */
 function resetForm() {
-  $("#form").reset(); editingId = null; photoData = null; photoChanged = false;
-  $("#preview").classList.remove("on");
+  $("#form").reset(); editingId = null; fotos = []; fotosChanged = false;
+  renderThumbs();
   $("#f_entrada").value = toLocalInput(Date.now());
   $("#formTitle").textContent = "Nova visita"; $("#btnSave").textContent = "Registrar entrada"; $("#btnCancelEdit").style.display = "none";
 }
@@ -702,7 +760,8 @@ $("#form").addEventListener("submit", async e => {
   };
   if (!r.nome || !r.visitado) { toast("Informe o nome e quem será visitado."); return; }
   const old = editingId ? visitas.find(x => x.id === editingId) : null;
-  r.temFoto = photoChanged ? !!photoData : !!(old && old.temFoto);
+  r.temFoto = fotosChanged ? fotos.length > 0 : !!(old && old.temFoto);
+  r.nFotos = fotosChanged ? fotos.length : (old ? (old.nFotos ?? (old.temFoto ? 1 : 0)) : 0);
   r.busca = norm([r.nome, r.doc_num, digits(r.cpf), r.cpf, r.telefone, digits(r.telefone), r.empresa, r.visitado, r.motivo, r.obs].join(" "));
   r.atualizadoEm = Date.now();
   r.criadoEm = old?.criadoEm || Date.now();
@@ -710,9 +769,10 @@ $("#form").addEventListener("submit", async e => {
   const btn = $("#btnSave"); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Salvando…';
   try {
     const ref = old ? F.doc(fs, "visitas", old.id) : F.doc(colV());
-    if (photoChanged) {
-      const fref = F.doc(fs, "fotos", ref.id);
-      if (photoData) await F.setDoc(fref, { img: photoData }); else if (old) await F.deleteDoc(fref);
+    if (fotosChanged) {
+      const antigas = old ? (old.nFotos ?? (old.temFoto ? 1 : 0)) : 0;
+      if (old) { await F.deleteDoc(F.doc(fs, "fotos", ref.id)).catch(() => {}); for (let i = 0; i < antigas; i++) await F.deleteDoc(F.doc(fs, "fotos", ref.id + "_" + i)).catch(() => {}); }
+      for (let i = 0; i < fotos.length; i++) await F.setDoc(F.doc(fs, "fotos", ref.id + "_" + i), { img: fotos[i] });
       fotoCache.delete(ref.id);
     }
     await F.setDoc(ref, r);
@@ -723,20 +783,27 @@ $("#form").addEventListener("submit", async e => {
 });
 
 function startEdit(r) {
-  closeSheet(); editingId = r.id; photoChanged = false; photoData = null;
+  closeSheet(); editingId = r.id; fotosChanged = false; fotos = [];
   $("#f_nome").value = r.nome || ""; $("#f_doc_tipo").value = r.doc_tipo || "RG"; $("#f_doc_num").value = r.doc_num || "";
   $("#f_cpf").value = r.cpf || ""; $("#f_tel").value = r.telefone || ""; $("#f_empresa").value = r.empresa || "";
   $("#f_visitado").value = r.visitado || ""; $("#f_motivo").value = r.motivo || ""; $("#f_obs").value = r.obs || "";
   $("#f_entrada").value = toLocalInput(r.entrada); $("#f_saida").value = toLocalInput(r.saida);
-  $("#preview").classList.remove("on");
-  if (r.temFoto) getFoto(r.id).then(src => { if (src && editingId === r.id) { $("#previewImg").src = src; $("#previewMsg").textContent = "Foto salva neste registro."; $("#preview").classList.add("on"); } });
+  renderThumbs();
+  if (r.temFoto) getFotos(r).then(list => { if (list.length && editingId === r.id && !fotosChanged) { fotos = list.slice(); renderThumbs(); $("#previewMsg").textContent = "Fotos salvas neste registro."; } });
   $("#formTitle").textContent = "Editar visita"; $("#btnSave").textContent = "Salvar alterações"; $("#btnCancelEdit").style.display = "flex";
   show("novo");
 }
-async function getFoto(id) {
-  if (fotoCache.has(id)) return fotoCache.get(id);
-  try { const s = await F.getDoc(F.doc(fs, "fotos", id)); const src = s.exists() ? s.data().img : null; fotoCache.set(id, src); return src; } catch { return null; }
+async function getFotos(r) {
+  if (fotoCache.has(r.id)) return fotoCache.get(r.id);
+  const n = r.nFotos ?? (r.temFoto ? 1 : 0); let list = [];
+  try {
+    if (r.nFotos == null) { const d = await F.getDoc(F.doc(fs, "fotos", r.id)); if (d.exists()) list = [d.data().img]; }
+    else list = (await Promise.all([...Array(n)].map((_, i) => F.getDoc(F.doc(fs, "fotos", r.id + "_" + i))))).filter(d => d.exists()).map(d => d.data().img);
+  } catch {}
+  fotoCache.set(r.id, list); return list;
 }
+async function getFoto(id) { const r = visitas.find(x => x.id === id); if (!r) return null; const l = await getFotos(r); return l[0] || null; }
+
 
 /* ---------------- RENDER ---------------- */
 function render() {
@@ -819,9 +886,9 @@ async function openSheet(id) {
   $("#veil").classList.add("on");
   $("#sEdit").onclick = () => startEdit(r); $("#sClose").onclick = closeSheet;
   $("#sDel").onclick = () => { const b = $("#sDel"); if (b.dataset.confirm) return excluir(r.id); b.dataset.confirm = "1"; b.textContent = "Toque de novo para confirmar"; b.style.background = "var(--red)"; b.style.color = "#fff"; };
-  if (r.temFoto) { $("#sheetFoto").innerHTML = `<div class="hint">Carregando documento…</div>`; const src = await getFoto(r.id); const box = $("#sheetFoto"); if (box) box.innerHTML = src ? `<label>Documento</label><img class="docimg" alt="Documento" src="${src}">` : ""; }
+  if (r.temFoto) { $("#sheetFoto").innerHTML = `<div class="hint">Carregando documento…</div>`; const list = await getFotos(r); const box = $("#sheetFoto"); if (box) box.innerHTML = list.length ? `<label>Documento${list.length > 1 ? ` (${list.length} páginas)` : ""}</label><div class="docgrid">${list.map((src, i) => `<img class="docimg" alt="Página ${i + 1}" src="${src}">`).join("")}</div>` : ""; }
 }
-async function excluir(id) { try { await F.deleteDoc(F.doc(fs, "visitas", id)); await F.deleteDoc(F.doc(fs, "fotos", id)).catch(() => {}); fotoCache.delete(id); toast("Registro excluído."); closeSheet(); } catch { toast("Não foi possível excluir."); } }
+async function excluir(id) { try { const r = visitas.find(x => x.id === id) || {}; await F.deleteDoc(F.doc(fs, "visitas", id)); await F.deleteDoc(F.doc(fs, "fotos", id)).catch(() => {}); for (let i = 0; i < (r.nFotos || 0); i++) await F.deleteDoc(F.doc(fs, "fotos", id + "_" + i)).catch(() => {}); fotoCache.delete(id); toast("Registro excluído."); closeSheet(); } catch { toast("Não foi possível excluir."); } }
 function closeSheet() { $("#veil").classList.remove("on"); }
 $("#veil").addEventListener("click", e => { if (e.target.id === "veil") closeSheet(); });
 
