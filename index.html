@@ -292,6 +292,16 @@ input.ok{border-color:#10b981!important}
 .team ul{list-style:none;padding:0;margin:8px 0 14px}
 .team li span{flex:1;word-break:break-all}
 
+.hist{border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:-4px 0 14px;background:var(--card)}
+.hist-last{font-size:13.5px;color:var(--ink2)}
+.hist .link{padding:6px 0 0;font-size:13.5px}
+.hist-list{margin:10px 0 0;padding:0;list-style:none;display:grid;gap:10px}
+.hist-list li{border-left:3px solid var(--lime);padding:4px 0 4px 10px}
+.hist-h{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;margin-bottom:4px}
+.hist-h span{color:var(--muted)}
+.hist-m{font-size:13px;line-height:1.45;word-break:break-word}
+.hist-m span{display:inline-block;min-width:92px;color:var(--muted);font-weight:600}
+.hist-m s{color:var(--red);opacity:.8}
 /* ===== modo escuro ===== */
 .themebtn{width:36px;height:36px;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(10,20,80,.55);color:#fff;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(6px)}
 .themebtn svg{width:18px;height:18px}
@@ -524,6 +534,19 @@ try { fs = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tab
 catch { fs = F.getFirestore(app); }
 const ai = AI.getAI(app, { backend: new AI.GoogleAIBackend() });
 const ADMIN = String(CFG.adminEmail || "").toLowerCase();
+const meuEmail = () => String(auth.currentUser?.email || "").toLowerCase();
+const souAdmin = () => meuEmail() === ADMIN;
+const possoEditar = r => souAdmin() || String(r.criadoPor || "").toLowerCase() === meuEmail();
+const ROTULOS = { nome:"Nome", doc_tipo:"Tipo de documento", doc_num:"Número do documento", cpf:"CPF", telefone:"Telefone", empresa:"Empresa", visitado:"Visitou", motivo:"Motivo", entrada:"Entrada", saida:"Saída", obs:"Observações", nFotos:"Páginas do documento" };
+function valorTxt(k, v) { if (v == null || v === "") return "(vazio)"; if (k === "entrada" || k === "saida") return fmtFull(v); return String(v); }
+function diferencas(antes, depois) {
+  const out = [];
+  for (const k of Object.keys(ROTULOS)) {
+    const a = antes[k] ?? (k === "nFotos" ? (antes.temFoto ? 1 : 0) : ""), d = depois[k] ?? "";
+    if (String(a ?? "") !== String(d ?? "")) out.push({ campo: ROTULOS[k], antes: valorTxt(k, a), depois: valorTxt(k, d) });
+  }
+  return out;
+}
 
 let iaOff = false, iaModelo = null;
 const comTempo = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error("tempo esgotado")), ms))]);
@@ -869,7 +892,13 @@ $("#form").addEventListener("submit", async e => {
   r.busca = norm([r.nome, r.doc_num, digits(r.cpf), r.cpf, r.telefone, digits(r.telefone), r.empresa, r.visitado, r.motivo, r.obs].join(" "));
   r.atualizadoEm = Date.now();
   r.criadoEm = old?.criadoEm || Date.now();
-  r.criadoPor = old?.criadoPor || auth.currentUser?.email || "";
+  r.criadoPor = old ? (old.criadoPor ?? "") : meuEmail();
+  if (old && !possoEditar(old)) { toast("Você só pode editar os registros que você mesmo fez."); return; }
+  if (old) {
+    const mud = diferencas(old, r);
+    if (!mud.length) { toast("Nada foi alterado."); resetForm(); return; }
+    r.historico = [...(old.historico || []), { por: meuEmail(), em: Date.now(), mudancas: mud }];
+  } else r.historico = [];
   const btn = $("#btnSave"); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Salvando…';
   try {
     const ref = old ? F.doc(fs, "visitas", old.id) : F.doc(colV());
@@ -975,7 +1004,13 @@ document.addEventListener("click", e => {
   const out = e.target.closest("[data-out]"); if (out) { e.stopPropagation(); registrarSaida(out.dataset.out); return; }
   const it = e.target.closest(".item"); if (it) openSheet(it.dataset.id);
 });
-async function registrarSaida(id) { try { await F.updateDoc(F.doc(fs, "visitas", id), { saida: Date.now(), atualizadoEm: Date.now() }); toast("Saída registrada."); closeSheet(); } catch { toast("Não foi possível registrar a saída."); } }
+async function registrarSaida(id) {
+  const agora = Date.now();
+  try {
+    await F.updateDoc(F.doc(fs, "visitas", id), { saida: agora, atualizadoEm: agora, historico: F.arrayUnion({ por: meuEmail(), em: agora, mudancas: [{ campo: "Saída", antes: "(vazio)", depois: fmtFull(agora) }] }) });
+    toast("Saída registrada."); closeSheet();
+  } catch { toast("Não foi possível registrar a saída."); }
+}
 async function openSheet(id) {
   const r = visitas.find(x => x.id === id); if (!r) return;
   const dur = r.saida ? Math.round((r.saida - r.entrada) / 60000) : null;
@@ -986,13 +1021,24 @@ async function openSheet(id) {
     <dl class="kv">${row("Entrada", fmtFull(r.entrada))}${row("Saída", r.saida ? fmtFull(r.saida) : "")}${row("Visitou", r.visitado)}${row("Motivo", r.motivo)}${row("Empresa", r.empresa)}${row(r.doc_tipo || "Documento", r.doc_num)}${row("CPF", r.cpf)}${row("Telefone", r.telefone)}${row("Observações", r.obs)}${row("Registrado por", r.criadoPor)}</dl>
     <div id="sheetFoto"></div>
     <div class="actions">${!r.saida ? `<button class="btn warn" data-out="${esc(r.id)}" style="grid-column:1/-1;padding:14px">Registrar saída agora</button>` : ""}
-      <button class="btn ghost" id="sEdit">Editar</button><button class="btn danger" id="sDel">Excluir</button><button class="btn ghost" id="sClose" style="grid-column:1/-1">Fechar</button></div>`;
+      ${possoEditar(r) ? `<button class="btn ghost" id="sEdit" style="${souAdmin() ? "" : "grid-column:1/-1"}">Editar</button>` : ""}${souAdmin() ? `<button class="btn danger" id="sDel" style="${possoEditar(r) ? "" : "grid-column:1/-1"}">Excluir</button>` : ""}<button class="btn ghost" id="sClose" style="grid-column:1/-1">Fechar</button></div>`;
+  const hist = r.historico || [];
+  if (hist.length) {
+    const ult = hist[hist.length - 1];
+    const box = document.createElement("div"); box.className = "hist";
+    box.innerHTML = `<div class="hist-last">✎ Alterado por <b>${esc(ult.por)}</b> em ${esc(fmtFull(ult.em))}</div>
+      <button type="button" class="link" id="hTog">Ver histórico (${hist.length})</button>
+      <ol class="hist-list" id="hList" hidden>${hist.slice().reverse().map(h => `<li><div class="hist-h"><b>${esc(h.por)}</b><span>${esc(fmtFull(h.em))}</span></div>${(h.mudancas || []).map(m => `<div class="hist-m"><span>${esc(m.campo)}</span><s>${esc(m.antes)}</s> → <b>${esc(m.depois)}</b></div>`).join("")}</li>`).join("")}</ol>`;
+    $("#sheet").querySelector(".kv").after(box);
+    box.querySelector("#hTog").onclick = () => { const l = box.querySelector("#hList"); l.hidden = !l.hidden; box.querySelector("#hTog").textContent = l.hidden ? `Ver histórico (${hist.length})` : "Ocultar histórico"; };
+  }
   $("#veil").classList.add("on");
-  $("#sEdit").onclick = () => startEdit(r); $("#sClose").onclick = closeSheet;
-  $("#sDel").onclick = () => { const b = $("#sDel"); if (b.dataset.confirm) return excluir(r.id); b.dataset.confirm = "1"; b.textContent = "Toque de novo para confirmar"; b.style.background = "var(--red)"; b.style.color = "#fff"; };
+  if ($("#sEdit")) $("#sEdit").onclick = () => startEdit(r);
+  $("#sClose").onclick = closeSheet;
+  if ($("#sDel")) $("#sDel").onclick = () => { const b = $("#sDel"); if (b.dataset.confirm) return excluir(r.id); b.dataset.confirm = "1"; b.textContent = "Toque de novo para confirmar"; b.style.background = "var(--red)"; b.style.color = "#fff"; };
   if (r.temFoto) { $("#sheetFoto").innerHTML = `<div class="hint">Carregando documento…</div>`; const list = await getFotos(r); const box = $("#sheetFoto"); if (box) box.innerHTML = list.length ? `<label>Documento${list.length > 1 ? ` (${list.length} páginas)` : ""}</label><div class="docgrid">${list.map((src, i) => `<img class="docimg" alt="Página ${i + 1}" src="${src}">`).join("")}</div>` : ""; }
 }
-async function excluir(id) { try { const r = visitas.find(x => x.id === id) || {}; await F.deleteDoc(F.doc(fs, "visitas", id)); await F.deleteDoc(F.doc(fs, "fotos", id)).catch(() => {}); for (let i = 0; i < (r.nFotos || 0); i++) await F.deleteDoc(F.doc(fs, "fotos", id + "_" + i)).catch(() => {}); fotoCache.delete(id); toast("Registro excluído."); closeSheet(); } catch { toast("Não foi possível excluir."); } }
+async function excluir(id) { if (!souAdmin()) { toast("Só o administrador pode excluir registros."); return; } try { const r = visitas.find(x => x.id === id) || {}; await F.deleteDoc(F.doc(fs, "visitas", id)); await F.deleteDoc(F.doc(fs, "fotos", id)).catch(() => {}); for (let i = 0; i < (r.nFotos || 0); i++) await F.deleteDoc(F.doc(fs, "fotos", id + "_" + i)).catch(() => {}); fotoCache.delete(id); toast("Registro excluído."); closeSheet(); } catch { toast("Não foi possível excluir."); } }
 function closeSheet() { $("#veil").classList.remove("on"); }
 $("#veil").addEventListener("click", e => { if (e.target.id === "veil") closeSheet(); });
 
